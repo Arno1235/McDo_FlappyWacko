@@ -8,8 +8,7 @@ pyautogui.PAUSE = 0
 
 
 LEFT, TOP = 0, 64
-# WIDTH, HEIGHT = 445, 940 # Full screen
-WIDTH, HEIGHT = 445, 860
+WIDTH, HEIGHT = 445, 860 # Full screen: 445, 940
 
 def show_screenshot(img):
 
@@ -26,27 +25,9 @@ def capture_screenshot():
                    "width": WIDTH, "height": HEIGHT}
         screenshot = np.array(sct.grab(monitor))
 
-        return cv2.cvtColor(screenshot, cv2.COLOR_BGR2HSV)
-        # return cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY) # Gray
+        return cv2.cvtColor(screenshot, cv2.COLOR_BGR2HSV), cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
 
-def find_vertical_line(lines, y, x):
-
-    res = []
-
-    for line in lines:
-        for x1, y1, x2, y2 in line:
-            y3 = min(y1, y2)
-            if x > x1 and y3 > y and x - x1 < 100 and y3 - y < 100:
-                res.append(x1)
-
-    return res
-
-def find_objects(img):
-
-    lower_red = np.array([0, 200, 200], dtype = "uint8")
-    upper_red= np.array([10, 255, 255], dtype = "uint8")
-
-    mask = cv2.inRange(img, lower_red, upper_red)
+def find_objects(img, img_gray, template1, template2, template1_h):
 
     lower_green = np.array([30, 100, 150], dtype = "uint8")
     upper_green= np.array([40, 155, 255], dtype = "uint8")
@@ -55,63 +36,120 @@ def find_objects(img):
 
     bird_loc = np.average(np.where(mask_bird==255), axis=-1)
 
+    object_locations = {
+        "bird" : (int(bird_loc[1]), int(bird_loc[0])),
+        "pillars" : [],
+    }
+
+    method = cv2.TM_CCOEFF_NORMED
+    threshold = 0.9
+
+    res = cv2.matchTemplate(img_gray, template1, method)
+
+    loc = np.where(res >= threshold)
+    for pt in zip(*loc[::-1]):
+
+        if len(object_locations["pillars"]) == 0:
+            object_locations["pillars"].append({
+                'x': pt[0],
+                'y1': pt[1] + template1_h,
+                'y2': -1,
+            })
+            continue
+
+        for pillar in object_locations["pillars"]:
+            if abs(pt[0] - pillar['x']) < 20:
+                break
+
+        else:
+            object_locations["pillars"].append({
+                'x': pt[0],
+                'y1': pt[1] + template1_h,
+                'y2': -1,
+            })
+
+    
+    res = cv2.matchTemplate(img_gray, template2, method)
+
+    loc = np.where( res >= threshold)
+    for pt in zip(*loc[::-1]):
+
+        for pillar in object_locations["pillars"]:
+            if abs(pt[0] - pillar['x']) < 20 and pillar['y2'] != -1:
+                break
+        else:
+
+            for i, pillar2 in enumerate(object_locations["pillars"]):
+                if abs(pt[0] - pillar2['x'] < 20 and pillar2['y2'] == -1):
+                    object_locations["pillars"][i]['y2'] = pt[1]
+                    break
+
+    return object_locations
+
+def show_object_locations(img, object_locations):
+
     img = cv2.cvtColor(img, cv2.COLOR_HSV2BGR)
 
+    img = cv2.circle(img, object_locations["bird"], radius=10, color=(255, 255, 0), thickness=-1)
 
-    low_threshold = 50
-    high_threshold = 150
-    edges = cv2.Canny(mask, low_threshold, high_threshold)
+    for pillar in object_locations["pillars"]:
 
-    rho = 1  # distance resolution in pixels of the Hough grid
-    theta = np.pi / 180  # angular resolution in radians of the Hough grid
-    threshold = 15  # minimum number of votes (intersections in Hough grid cell)
-    min_line_length = 50  # minimum number of pixels making up a line
-    max_line_gap = 20  # maximum gap in pixels between connectable line segments
-    line_image = np.copy(img) * 0  # creating a blank to draw lines on
+        img = cv2.circle(img, (pillar['x'], pillar['y1']), radius=10, color=(0, 0, 255), thickness=-1)
+        img = cv2.circle(img, (pillar['x'], pillar['y2']), radius=10, color=(255, 0, 0), thickness=-1)
 
-    # Run Hough on edge detected image
-    # Output "lines" is an array containing endpoints of detected line segments
-    lines = cv2.HoughLinesP(edges, rho, theta, threshold, np.array([]),
-                        min_line_length, max_line_gap)
-
-    
-    for line in lines:
-        for x1, y1, x2, y2 in line:
-
-            if abs(y1 - y2) < 10: # Horizontal line
-                res = find_vertical_line(lines, y1, min(x1, x2))
-                if len(res) > 0:
-                    line_image = cv2.circle(line_image, (res[0], y1), radius=10, color=(0, 255, 0), thickness=-1)
-                    line_image = cv2.circle(line_image, (res[0] + 150, y1), radius=10, color=(0, 255, 0), thickness=-1)
-
-                    line_image = cv2.circle(line_image, (res[0], y1 - 300), radius=10, color=(255, 255, 0), thickness=-1)
-                    line_image = cv2.circle(line_image, (res[0] + 150, y1 - 300), radius=10, color=(255, 255, 0), thickness=-1)
-
-    
-    line_image = cv2.circle(line_image, (int(bird_loc[1]), int(bird_loc[0])), radius=10, color=(255, 255, 255), thickness=-1)
-
-    
-    # Draw the lines on the  image
-    lines_edges = cv2.addWeighted(img, 0.8, line_image, 1, 0)
-
-    cv2.imshow('edges', lines_edges)
-    # cv2.imshow('mask', mask)
+    cv2.imshow('object locations', img)
     cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    cv2.destroyAllWindows
 
-def click(x, y):
-    pyautogui.moveTo((x+LEFT)/2, (y+TOP)/2)
-    pyautogui.click()
+def prediction(object_locations):
+
+    for pillar in object_locations["pillars"]: # Order?
+
+        if pillar["x"] > object_locations["bird"][0]:
+
+            if object_locations["bird"][1] > pillar["y2"] - 50:
+                return True
+
+            break
+
+    return False
 
 def main():
 
-    start = time.time()
-    img = capture_screenshot()
-    print(f'{time.time() - start}s')
-    
-    start = time.time()
-    find_objects(img)
-    print(f'{time.time() - start}s')
+    TIMING = False
+
+    pyautogui.moveTo((LEFT + WIDTH/2), (TOP + HEIGHT/2))
+
+    input("Enter to start")
+
+    for i in range(200):
+
+        if TIMING:
+            start = time.time()
+        
+        img, gray = capture_screenshot()
+
+        if TIMING:
+            print(f'{time.time() - start}s')
+
+        template = cv2.imread('template1.png', cv2.IMREAD_GRAYSCALE)
+        template2 = cv2.imread('template2.png', cv2.IMREAD_GRAYSCALE)
+        
+        if TIMING:
+            start = time.time()
+
+        object_locations = find_objects(img, gray, template, template2, template.shape[::-1][1])
+
+        if TIMING:
+            print(f'{time.time() - start}s')
+
+        # show_object_locations(img, object_locations)
+
+        print(object_locations)
+
+        if prediction(object_locations):
+            pyautogui.click()
+            time.sleep(0.1)
 
 
 if __name__ == "__main__":
